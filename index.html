@@ -82,7 +82,7 @@
     <div>
       <span class="icon">🎤</span>
       <div class="label">PERGUNTAR</div>
-      <div class="sublabel">Toque aqui e fale sua dúvida sobre a última foto</div>
+      <div class="sublabel">Toque aqui para fazer uma pergunta, com ou sem foto</div>
     </div>
   </div>
 </div>
@@ -219,11 +219,6 @@ async function fluxoFoto() {
 async function fluxoPergunta() {
   if (isBusy) return;
 
-  if (!lastPhotoBase64) {
-    falar('Você ainda não tirou nenhuma foto. Toque na parte de cima primeiro.');
-    return;
-  }
-
   isBusy = true;
   zonePergunta.classList.add('processing');
 
@@ -235,11 +230,13 @@ async function fluxoPergunta() {
         setStatus('Você perguntou: ' + pergunta);
         falar('Verificando.');
 
-        const resposta = await chamarIA({
-          tipo: 'perguntar',
-          imagem: lastPhotoBase64,
-          pergunta: pergunta
-        });
+        // Se já existe uma foto tirada antes, manda ela junto.
+        // Se não existe, manda só a pergunta (conversa livre com a IA).
+        const payload = lastPhotoBase64
+          ? { tipo: 'perguntar', imagem: lastPhotoBase64, pergunta: pergunta }
+          : { tipo: 'perguntar_sem_foto', pergunta: pergunta };
+
+        const resposta = await chamarIA(payload);
 
         falar(resposta);
         setStatus('Pronto. Toque novamente para outra pergunta.');
@@ -278,7 +275,7 @@ window.addEventListener('load', async () => {
   const ok = await iniciarCamera();
   if (ok) {
     setStatus('Pronto.');
-    falar('Oi, eu sou a sua assistente visual. Toque na parte de cima da tela para eu tirar uma foto e descrever o que estou vendo. Toque na parte de baixo para me fazer uma pergunta sobre a última foto.');
+    falar('Oi, eu sou a sua assistente visual. Toque na parte de cima da tela para eu tirar uma foto e descrever o que estou vendo. Toque na parte de baixo para me fazer qualquer pergunta, com ou sem foto.');
   }
 });
 </script>
