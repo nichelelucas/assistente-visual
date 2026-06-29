@@ -10,8 +10,12 @@ export default async function handler(req, res) {
 
   const { tipo, imagem, pergunta } = req.body;
 
-  if (!imagem) {
+  // Só exige imagem quando o tipo realmente precisa dela
+  if ((tipo === 'descrever' || tipo === 'perguntar') && !imagem) {
     return res.status(400).json({ erro: 'Imagem não enviada' });
+  }
+  if (tipo === 'perguntar_sem_foto' && !pergunta) {
+    return res.status(400).json({ erro: 'Pergunta não enviada' });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -26,6 +30,11 @@ export default async function handler(req, res) {
 Responda à pergunta do usuário sobre a imagem de forma curta, direta e falada (sem markdown, sem listas, apenas frases naturais para serem lidas em voz alta).
 Pergunta do usuário: "${pergunta}"
 Se a imagem não tiver informação suficiente para responder, diga isso claramente e sugira tirar outra foto mais próxima ou com mais luz.`;
+  } else if (tipo === 'perguntar_sem_foto') {
+    instrucao = `Você é uma assistente de tecnologia assistiva para pessoas com deficiência visual, conversando por voz.
+Responda à pergunta do usuário de forma curta, direta e natural, como se estivesse falando (sem markdown, sem listas).
+Pergunta do usuário: "${pergunta}"
+Se a pergunta depender de ver algo (um objeto, uma imagem, um texto físico), explique que para isso o usuário precisa tocar na parte de cima da tela para tirar uma foto primeiro.`;
   } else {
     instrucao = `Você é uma assistente de tecnologia assistiva para pessoas com deficiência visual.
 Descreva o objeto principal da imagem de forma curta e útil (máximo 3 frases), como se estivesse falando em voz alta para alguém que não pode ver.
@@ -33,6 +42,16 @@ Inclua o nome do produto/objeto, e qualquer informação relevante visível (val
 Se a imagem estiver borrada, muito escura, ou não for possível identificar o objeto com confiança, diga isso claramente e peça para tirar outra foto, mais de perto e com mais luz.
 Não use markdown, não use listas. Apenas frases naturais, como uma pessoa falaria.`;
   }
+
+  // Monta o conteúdo da mensagem: só inclui bloco de imagem quando existir uma
+  const content = [];
+  if (imagem) {
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/jpeg', data: imagem }
+    });
+  }
+  content.push({ type: 'text', text: instrucao });
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -48,20 +67,7 @@ Não use markdown, não use listas. Apenas frases naturais, como uma pessoa fala
         messages: [
           {
             role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: 'image/jpeg',
-                  data: imagem
-                }
-              },
-              {
-                type: 'text',
-                text: instrucao
-              }
-            ]
+            content: content
           }
         ]
       })
