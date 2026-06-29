@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Assistente Visual</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #000;
+    user-select: none;
+  }
+  #app {
+    height: 100vh;
+    width: 100vw;
+    display: flex;
+    flex-direction: column;
+  }
+  .zone {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 20px;
+    transition: background 0.15s;
+    position: relative;
+  }
+  #zone-foto {
+    background: #1a3a1a;
+    border-bottom: 4px solid #333;
+  }
+  #zone-foto.active { background: #2d6a2d; }
+  #zone-pergunta {
+    background: #1a1a3a;
+  }
+  #zone-pergunta.active { background: #2d2d6a; }
+  .zone.processing { background: #444 !important; }
+  .label {
+    color: white;
+    font-size: 7vw;
+    font-weight: bold;
+    line-height: 1.3;
+    pointer-events: none;
+  }
+  .sublabel {
+    color: #ccc;
+    font-size: 4vw;
+    margin-top: 10px;
+    pointer-events: none;
+  }
+  #status {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    color: #888;
+    font-size: 3vw;
+    text-align: center;
+    padding: 8px;
+    background: rgba(0,0,0,0.6);
+    pointer-events: none;
+  }
+  video, canvas { display: none; }
+  .icon { font-size: 14vw; display: block; margin-bottom: 10px; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="zone-foto" class="zone">
+    <div>
+      <span class="icon">📷</span>
+      <div class="label">TIRAR FOTO</div>
+      <div class="sublabel">Toque aqui para eu descrever o objeto</div>
+    </div>
+  </div>
+  <div id="zone-pergunta" class="zone">
+    <div>
+      <span class="icon">🎤</span>
+      <div class="label">PERGUNTAR</div>
+      <div class="sublabel">Toque aqui e fale sua dúvida sobre a última foto</div>
+    </div>
+  </div>
+</div>
+
+<div id="status">Carregando...</div>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+
+<script>
+const API_URL = '/api/analyze'; // mesma origem do site no Vercel
+
+const zoneFoto = document.getElementById('zone-foto');
+const zonePergunta = document.getElementById('zone-pergunta');
+const statusEl = document.getElementById('status');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+
+let stream = null;
+let lastPhotoBase64 = null;
+let isBusy = false;
+
+function setStatus(msg) {
+  statusEl.textContent = msg;
+}
+
+// ---------- FALA (Text to Speech) ----------
+function falar(texto, callback) {
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(texto);
+  utter.lang = 'pt-BR';
+  utter.rate = 1.0;
+  if (callback) utter.onend = callback;
+  window.speechSynthesis.speak(utter);
+}
+
+// ---------- CÂMERA ----------
+async function iniciarCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    return true;
+  } catch (err) {
+    setStatus('Erro ao acessar câmera: ' + err.message);
+    falar('Não consegui acessar a câmera. Verifique as permissões do site.');
+    return false;
+  }
+}
+
+function tirarFotoBase64() {
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  // qualidade 0.8 pra equilibrar tamanho/upload
+  return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+}
+
+// ---------- RECONHECIMENTO DE VOZ ----------
+function ouvirPergunta() {
+  return new Promise((resolve, reject) => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      reject(new Error('sem suporte'));
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'pt-BR';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      const texto = event.results[0][0].transcript;
+      resolve(texto);
+    };
+    recognition.onerror = (event) => {
+      reject(new Error(event.error));
+    };
+    recognition.onend = () => {
+      // se não pegou resultado, evita ficar pendurado
+    };
+    recognition.start();
+  });
+}
+
+// ---------- CHAMADA DA IA ----------
+async function chamarIA(payload) {
+  const resp = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error('Erro do servidor: ' + errText);
+  }
+  const data = await resp.json();
+  return data.resposta;
+}
+
+// ---------- FLUXO: TIRAR FOTO ----------
+async function fluxoFoto() {
+  if (isBusy) return;
+  isBusy = true;
+  zoneFoto.classList.add('processing');
+  setStatus('Tirando foto...');
+
+  try {
+    const fotoBase64 = tirarFotoBase64();
+    lastPhotoBase64 = fotoBase64;
+
+    setStatus('Analisando com a IA...');
+    falar('Analisando.');
+
+    const resposta = await chamarIA({ tipo: 'descrever', imagem: fotoBase64 });
+
+    falar(resposta);
+    setStatus('Pronto. Toque novamente para outra foto.');
+  } catch (err) {
+    console.error(err);
+    falar('Desculpe, não consegui analisar a imagem agora. Pode tentar de novo?');
+    setStatus('Erro: ' + err.message);
+  } finally {
+    zoneFoto.classList.remove('processing');
+    isBusy = false;
+  }
+}
+
+// ---------- FLUXO: PERGUNTAR ----------
+async function fluxoPergunta() {
+  if (isBusy) return;
+
+  if (!lastPhotoBase64) {
+    falar('Você ainda não tirou nenhuma foto. Toque na parte de cima primeiro.');
+    return;
+  }
+
+  isBusy = true;
+  zonePergunta.classList.add('processing');
+
+  try {
+    setStatus('Pode perguntar...');
+    falar('Pode perguntar.', async () => {
+      try {
+        const pergunta = await ouvirPergunta();
+        setStatus('Você perguntou: ' + pergunta);
+        falar('Verificando.');
+
+        const resposta = await chamarIA({
+          tipo: 'perguntar',
+          imagem: lastPhotoBase64,
+          pergunta: pergunta
+        });
+
+        falar(resposta);
+        setStatus('Pronto. Toque novamente para outra pergunta.');
+      } catch (err) {
+        console.error(err);
+        if (err.message === 'sem suporte') {
+          falar('Seu navegador não tem suporte a reconhecimento de voz.');
+        } else {
+          falar('Não consegui te ouvir bem. Pode tentar de novo?');
+        }
+        setStatus('Erro: ' + err.message);
+      } finally {
+        zonePergunta.classList.remove('processing');
+        isBusy = false;
+      }
+    });
+  } catch (err) {
+    zonePergunta.classList.remove('processing');
+    isBusy = false;
+  }
+}
+
+// ---------- EVENTOS DE TOQUE ----------
+zoneFoto.addEventListener('click', fluxoFoto);
+zonePergunta.addEventListener('click', fluxoPergunta);
+
+// feedback visual simples ao tocar
+[zoneFoto, zonePergunta].forEach(zone => {
+  zone.addEventListener('touchstart', () => zone.classList.add('active'));
+  zone.addEventListener('touchend', () => zone.classList.remove('active'));
+});
+
+// ---------- INICIALIZAÇÃO ----------
+window.addEventListener('load', async () => {
+  setStatus('Solicitando permissão de câmera...');
+  const ok = await iniciarCamera();
+  if (ok) {
+    setStatus('Pronto.');
+    falar('Oi, eu sou a sua assistente visual. Toque na parte de cima da tela para eu tirar uma foto e descrever o que estou vendo. Toque na parte de baixo para me fazer uma pergunta sobre a última foto.');
+  }
+});
+</script>
+</body>
+</html>
